@@ -37,6 +37,8 @@ import org.wso2.carbon.consent.mgt.core.model.ReceiptService;
 import org.wso2.carbon.consent.mgt.core.model.ReceiptServiceInput;
 import org.wso2.carbon.context.PrivilegedCarbonContext;
 import org.wso2.carbon.identity.application.authentication.framework.exception.FrameworkException;
+import org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.constant
+        .ConsentSSOConstants;
 import org.wso2.carbon.identity.application.authentication.framework.internal.FrameworkServiceDataHolder;
 import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatedUser;
 import org.wso2.carbon.identity.application.common.model.ClaimMapping;
@@ -49,6 +51,7 @@ import org.wso2.carbon.user.core.util.UserCoreUtil;
 import org.wso2.carbon.utils.multitenancy.MultitenantConstants;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -57,12 +60,19 @@ import java.util.Map;
 
 import static org.apache.commons.collections.CollectionUtils.isNotEmpty;
 import static org.apache.commons.lang.StringUtils.EMPTY;
+import static org.apache.commons.lang.StringUtils.isEmpty;
 import static org.apache.commons.lang.StringUtils.isNotBlank;
 import static org.wso2.carbon.consent.mgt.core.constant.ConsentConstants.ACTIVE_STATE;
 import static org.wso2.carbon.consent.mgt.core.constant.ConsentConstants.ErrorMessages.ERROR_CODE_PII_CAT_NAME_INVALID;
 import static org.wso2.carbon.consent.mgt.core.constant.ConsentConstants.ErrorMessages
         .ERROR_CODE_PURPOSE_CAT_NAME_INVALID;
 import static org.wso2.carbon.consent.mgt.core.constant.ConsentConstants.ErrorMessages.ERROR_CODE_PURPOSE_NAME_INVALID;
+import static org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.constant
+        .ConsentSSOConstants.CONSENT_VALIDITY_TYPE_VALID_UNTIL;
+import static org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.constant
+        .ConsentSSOConstants.CONSENT_VALIDITY_TYPE_VALID_UNTIL_INDEFINITE;
+import static org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.constant
+        .ConsentSSOConstants.CONSENT_VALIDITY_TYPE_SEPARATOR;
 import static org.wso2.carbon.identity.claim.metadata.mgt.util.ClaimConstants.DESCRIPTION_PROPERTY;
 import static org.wso2.carbon.identity.claim.metadata.mgt.util.ClaimConstants.DISPLAY_NAME_PROPERTY;
 
@@ -76,15 +86,49 @@ public class SSOConsentServiceImpl implements SSOConsentService {
     private static final String DEFAULT_PURPOSE_CATEGORY = "DEFAULT";
 
     /**
+     * Get consent required claims for a given service from a user considering existing user consents.
+     *
+     * @param serviceProvider       Service provider requesting consent.
+     * @param authenticatedUser     Authenticated user requesting consent form.
+     * @return ConsentClaimsData which contains mandatory and required claims for consent.
+     * @throws FrameworkException If error occurs while building claim information.
+     */
+    @Override
+    public ConsentClaimsData getConsentRequiredClaimsWithExistingConsents(ServiceProvider serviceProvider,
+                                                                          AuthenticatedUser authenticatedUser)
+            throws FrameworkException {
+
+        return getConsentRequiredClaims(serviceProvider, authenticatedUser, true);
+    }
+
+    /**
+     * Get consent required claims for a given service from a user ignoring existing user consents.
+     *
+     * @param serviceProvider       Service provider requesting consent.
+     * @param authenticatedUser     Authenticated user requesting consent form.
+     * @return ConsentClaimsData which contains mandatory and required claims for consent.
+     * @throws FrameworkException If error occurs while building claim information.
+     */
+    @Override
+    public ConsentClaimsData getConsentRequiredClaimsWithoutExistingConsents(ServiceProvider serviceProvider,
+                                                                             AuthenticatedUser authenticatedUser)
+            throws FrameworkException {
+
+        return getConsentRequiredClaims(serviceProvider, authenticatedUser, false);
+    }
+
+    /**
      * Get consent required claims for a given service from a user.
      *
      * @param serviceProvider   Service provider requesting consent.
      * @param authenticatedUser Authenticated user requesting consent form.
+     * @param useExistingConsents Use existing consent given by the user.
      * @return ConsentClaimsData which contains mandatory and required claims for consent.
      * @throws FrameworkException If error occurs while building claim information.
      */
-    public ConsentClaimsData getConsentRequiredClaims(ServiceProvider serviceProvider, AuthenticatedUser
-            authenticatedUser, boolean ignoreExistingConsent) throws FrameworkException {
+    private ConsentClaimsData getConsentRequiredClaims(ServiceProvider serviceProvider,
+                                                       AuthenticatedUser authenticatedUser,
+                                                       boolean useExistingConsents) throws FrameworkException {
 
         if (serviceProvider == null) {
             throw new FrameworkException("Service provider cannot be null.");
@@ -115,24 +159,27 @@ public class SSOConsentServiceImpl implements SSOConsentService {
             }
         }
 
+        List<ClaimMetaData> receiptConsentMetaData = new ArrayList<>();
         List<ReceiptListResponse> receiptListResponses = getReceiptOfUser(serviceProvider, authenticatedUser,
                                                                           spName, spTenantDomain, subject);
-        if (!ignoreExistingConsent && hasUserSingleReceipt(receiptListResponses)) {
+        if (useExistingConsents && hasUserSingleReceipt(receiptListResponses)) {
 
             String receiptId = getFirstConsentReceiptFromList(receiptListResponses);
             Receipt receipt = getReceipt(authenticatedUser, receiptId);
 
-            List<ClaimMetaData> receiptConsentMetaData = getConsentClaimsFromReceipt(receipt);
+            receiptConsentMetaData = getConsentClaimsFromReceipt(receipt);
             List<String> claimsWithConsent = getClaimsFromConsentMetaData(receiptConsentMetaData);
             mandatoryClaims.removeAll(claimsWithConsent);
             // Only request consent for mandatory claims without consent when a receipt already exist for the user.
             requestedClaims.clear();
         }
         consentClaimsData = getConsentRequiredClaimData(mandatoryClaims, requestedClaims, spTenantDomain);
+        consentClaimsData.setClaimsWithConsent(receiptConsentMetaData);
         return consentClaimsData;
     }
 
     private ClaimMapping[] getSpClaimMappings(ServiceProvider serviceProvider) {
+
         if (serviceProvider.getClaimConfig() != null) {
             return serviceProvider.getClaimConfig().getClaimMappings();
         } else {
@@ -141,6 +188,7 @@ public class SSOConsentServiceImpl implements SSOConsentService {
     }
 
     private String getSPTenantDomain(ServiceProvider serviceProvider) {
+
         String spTenantDomain;
         User owner = serviceProvider.getOwner();
         if (owner != null) {
@@ -267,7 +315,8 @@ public class SSOConsentServiceImpl implements SSOConsentService {
         String jurisdiction = "LK";
         String language = "us_EN";
         String consentType = "EXPLICIT";
-        String termination = "DATE_UNTIL:INDEFINITE";
+        String termination = CONSENT_VALIDITY_TYPE_VALID_UNTIL + CONSENT_VALIDITY_TYPE_SEPARATOR +
+                             CONSENT_VALIDITY_TYPE_VALID_UNTIL_INDEFINITE;
         String policyUrl = "http://nolink";
 
         Purpose purpose = getDefaultPurpose();
@@ -506,8 +555,7 @@ public class SSOConsentServiceImpl implements SSOConsentService {
         Receipt currentReceipt = getReceipt(authenticatedUser, receiptId);
         List<PIICategoryValidity> piiCategoriesFromServices = getPIICategoriesFromServices
                 (currentReceipt.getServices());
-        List<ClaimMetaData> claimsFromPIICategoryValidity = getClaimsFromPIICategoryValidity
-                (piiCategoriesFromServices);
+        List<ClaimMetaData> claimsFromPIICategoryValidity = getClaimsFromPIICategoryValidity(piiCategoriesFromServices);
         claimsWithConsent.addAll(claimsFromPIICategoryValidity);
         return claimsWithConsent;
     }
@@ -616,7 +664,6 @@ public class SSOConsentServiceImpl implements SSOConsentService {
         for (PIICategoryValidity piiCategoryValidity : piiCategories) {
 
             if (isConsentForClaimValid(piiCategoryValidity)) {
-
                 ClaimMetaData claimMetaData = new ClaimMetaData();
                 claimMetaData.setClaimUri(piiCategoryValidity.getName());
                 claimMetaData.setDisplayName(piiCategoryValidity.getDisplayName());
@@ -628,7 +675,47 @@ public class SSOConsentServiceImpl implements SSOConsentService {
 
     protected boolean isConsentForClaimValid(PIICategoryValidity piiCategoryValidity) {
 
+        String consentValidity = piiCategoryValidity.getValidity();
+
+        if (isEmpty(consentValidity)) {
+            return true;
+        }
+
+        List<String> consentValidityEntries = Arrays.asList(consentValidity.split(ConsentSSOConstants
+                                                                                          .CONSENT_VALIDITY_SEPARATOR));
+        for (String consentValidityEntry : consentValidityEntries) {
+            if (consentValidityEntry.toUpperCase().startsWith(CONSENT_VALIDITY_TYPE_VALID_UNTIL)) {
+                String[] validityEntry = consentValidityEntry.split(CONSENT_VALIDITY_TYPE_SEPARATOR, 2);
+                if (validityEntry.length == 2) {
+                    long currentTimeMillis = System.currentTimeMillis();
+                    try {
+                        String validTime = validityEntry[1];
+                        if (isDebugEnabled()) {
+                            String message = String.format("Validity time for PII category: %s is %s.",
+                                                           piiCategoryValidity.getName(), validTime);
+                            logDebug(message);
+                        }
+                        if (isExpiryIndefinite(validTime)) {
+                            return true;
+                        }
+                        long consentExpiryInMillis = Long.parseLong(validTime);
+                        return consentExpiryInMillis > currentTimeMillis;
+                    } catch (NumberFormatException e) {
+                        if (isDebugEnabled()) {
+                            String message = String.format("Cannot parse timestamp: %s. for PII category %s.",
+                                                           consentValidity, piiCategoryValidity.getName());
+                            logDebug(message);
+                        }
+                    }
+                }
+            }
+        }
         return true;
+    }
+
+    private boolean isExpiryIndefinite(String validTime) {
+
+        return CONSENT_VALIDITY_TYPE_VALID_UNTIL_INDEFINITE.equalsIgnoreCase(validTime);
     }
 
     private boolean isMandatoryClaimsDisapproved(List<ClaimMetaData> consentMandatoryClaims, List<ClaimMetaData>
