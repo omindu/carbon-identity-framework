@@ -16,10 +16,14 @@
 
 package org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent;
 
+import com.google.gson.Gson;
 import org.apache.commons.lang.StringUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.http.client.utils.URIBuilder;
+import org.wso2.carbon.consent.mgt.core.ConsentManager;
+import org.wso2.carbon.consent.mgt.core.exception.ConsentManagementException;
+import org.wso2.carbon.consent.mgt.core.model.Purpose;
 import org.wso2.carbon.identity.application.authentication.framework.config.ConfigurationFacade;
 import org.wso2.carbon.identity.application.authentication.framework.config.model.ApplicationConfig;
 import org.wso2.carbon.identity.application.authentication.framework.context.AuthenticationContext;
@@ -36,6 +40,8 @@ import org.wso2.carbon.identity.application.authentication.framework.internal.Fr
 import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatedUser;
 import org.wso2.carbon.identity.application.authentication.framework.util.FrameworkConstants;
 import org.wso2.carbon.identity.application.common.model.ClaimMapping;
+import org.wso2.carbon.identity.application.common.model.ConsentConfig;
+import org.wso2.carbon.identity.application.common.model.ConsentPurpose;
 import org.wso2.carbon.identity.application.common.model.ServiceProvider;
 import org.wso2.carbon.identity.application.common.model.User;
 import org.wso2.carbon.identity.application.mgt.ApplicationConstants;
@@ -46,6 +52,7 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -100,6 +107,18 @@ public class ConsentMgtPostAuthnHandler extends AbstractPostAuthnHandler {
             return PostAuthnHandlerFlowStatus.SUCCESS_COMPLETED;
         }
 
+        ServiceProvider serviceProvider = getServiceProvider(context);
+        ConsentConfig consentConfig = serviceProvider.getConsentConfig();
+        if (consentConfig != null) {
+            if (!consentConfig.isEnabled()) {
+                if (isDebugEnabled()) {
+                    String message = "Consent management is disabled for SP: " + serviceProvider.getApplicationName();
+                    logDebug(message);
+                }
+                return PostAuthnHandlerFlowStatus.SUCCESS_COMPLETED;
+            }
+        }
+
         if (isConsentPrompted(context)) {
             return handlePostConsent(request, response, context);
         } else {
@@ -128,6 +147,33 @@ public class ConsentMgtPostAuthnHandler extends AbstractPostAuthnHandler {
         log.debug(message);
     }
 
+    private ConsentManager getConsentManager() {
+
+        return FrameworkServiceDataHolder.getInstance().getConsentManager();
+    }
+
+    private List<String> getUserClaimsInLocalDialect(AuthenticationContext context) {
+
+        String spStandardDialect = getStandardDialect(context);
+        Map<ClaimMapping, String> userAttributes = getUserAttributes(context);
+        List<String> userLocalClaims = new ArrayList<>();
+        Map<String, String> claimMappings;
+        if (isStandardDialect(spStandardDialect)) {
+            claimMappings = getSPToCarbonClaimMappings(context);
+        } else {
+            // WSO2 dialect or Non standards custom claim mappings.
+            claimMappings = context.getSequenceConfig().getApplicationConfig().getRequestedClaimMappings();
+        }
+
+        for (Map.Entry<ClaimMapping, String> entry : userAttributes.entrySet()) {
+            String claimKey = entry.getKey().getLocalClaim().getClaimUri();
+            if (claimMappings.containsKey(claimKey)) {
+                userLocalClaims.add(claimMappings.get(claimKey));
+            }
+        }
+        return userLocalClaims;
+    }
+
     protected PostAuthnHandlerFlowStatus handlePreConsent(HttpServletRequest request, HttpServletResponse response,
                                                           AuthenticationContext context)
             throws PostAuthenticationFailedException {
@@ -142,6 +188,77 @@ public class ConsentMgtPostAuthnHandler extends AbstractPostAuthnHandler {
 
         AuthenticatedUser authenticatedUser = getAuthenticatedUser(context);
         ServiceProvider serviceProvider = getServiceProvider(context);
+
+        //------------------ New consent implementation --------------------------
+
+        ConsentConfig consentConfig = serviceProvider.getConsentConfig();
+        String consentDescription = null;
+        if (consentConfig != null) {
+            consentDescription = consentConfig.getDescription();
+            if (consentDescription != null) {
+                consentDescription = consentDescription.replace("{{sp.name}}", serviceProvider
+                        .getApplicationName());
+            }
+        }
+
+
+        List<String> userClaimsInLocalDialect = getUserClaimsInLocalDialect(context);
+        ConsentClaimsData consentRequiredClaimsFromUserWithExistingConsents;
+        try {
+            consentRequiredClaimsFromUserWithExistingConsents = getSSOConsentService()
+                    .getConsentRequiredClaimsFromUserWithExistingConsents(serviceProvider,
+                                                                          getAuthenticatedUser(context),
+                                                                          userClaimsInLocalDialect);
+        } catch (SSOConsentServiceException e) {
+            String error = String.format("Error occurred while retrieving consent data of user: %s for service " +
+                                         "provider: %s in tenant domain: %s.",
+                                         authenticatedUser.getAuthenticatedSubjectIdentifier(),
+                                         serviceProvider.getApplicationName(), getSPTenantDomain(serviceProvider));
+            throw new PostAuthenticationFailedException("Authentication failed. Error occurred while processing user " +
+                                                        "consent.", error, e);
+        }
+
+        // Check additional purposes are configured
+        if (consentConfig != null && consentConfig.getConsentPurposeConfigs() != null && consentConfig
+                .getConsentPurposeConfigs().getConsentPurpose() != null) {
+
+            ConsentPurpose[] consentPurposes = consentConfig.getConsentPurposeConfigs().getConsentPurpose();
+            List<ApplicationConsentPurpose> appConsentPurposes = new ArrayList<>();
+
+            for (ConsentPurpose consentPurpose : consentPurposes) {
+
+                int purposeId = consentPurpose.getPurposeId();
+                try {
+                    Purpose purpose = getConsentManager().getPurpose(purposeId);
+                    if (purpose.getPurposePIICategories() != null && !purpose.getPurposePIICategories().isEmpty()) {
+
+                        ApplicationConsentPurpose appConsentPurpose = new ApplicationConsentPurpose(
+                                purpose, consentPurpose.getDisplayOrder());
+                        appConsentPurposes.add(appConsentPurpose);
+                    }
+
+                } catch (ConsentManagementException e) {
+                    String msg = String.format("Error while retrieving Purpose: %s.", purposeId);
+                    throw new PostAuthenticationFailedException("Authentication failed. Error occurred while " +
+                                                                "processing user consent.", msg, e);
+                }
+            }
+
+            ApplicationConsent applicationConsent = new ApplicationConsent();
+            applicationConsent.setConsentDescription(consentDescription);
+            applicationConsent.setApplicationConsentPurposes(appConsentPurposes);
+
+            String applicationConsentJSON = new Gson().toJson(applicationConsent);
+            context.addEndpointParam("ApplicationConsent", applicationConsentJSON);
+
+        } else {
+
+
+        }
+
+
+        //------------------------------------------------------------------------
+
         try {
             ConsentClaimsData consentClaimsData = getSSOConsentService().getConsentRequiredClaimsWithExistingConsents
                     (serviceProvider, authenticatedUser);
@@ -280,27 +397,53 @@ public class ConsentMgtPostAuthnHandler extends AbstractPostAuthnHandler {
                                         serviceProvider.getApplicationName(), getSPTenantDomain(serviceProvider));
                 logDebug(message);
             }
-            UserConsent userConsent = processUserConsent(request, context);
-            ConsentClaimsData consentClaimsData = getConsentClaimsData(context, authenticatedUser, serviceProvider);
 
-            try {
+            if (!isAdvanceConsentManagementEnabled(serviceProvider)) {
 
-                List<Integer> claimIdsWithConsent = getClaimIdsWithConsent(userConsent);
-                getSSOConsentService().processConsent(claimIdsWithConsent, serviceProvider, authenticatedUser,
-                                                 consentClaimsData);
-                removeDisapprovedClaims(context, userConsent);
-            } catch (SSOConsentDisabledException e) {
-                String error = "Authentication Failure: Consent management is disabled for SSO.";
-                String errorDesc = "Illegal operation. Consent management is disabled, but post authentication for " +
-                                   "sso consent management is invoked.";
-                throw new PostAuthenticationFailedException(error, errorDesc, e);
-            } catch (SSOConsentServiceException e) {
-                String error = "Error occurred while processing consent input of user: %s, for service provider: %s " +
-                               "in tenant domain: %s.";
-                error = String.format(error, authenticatedUser.getAuthenticatedSubjectIdentifier(), serviceProvider
-                        .getApplicationName(), getSPTenantDomain(serviceProvider));
-                throw new PostAuthenticationFailedException("Authentication failed. Error while processing user " +
-                                                            "consent input.", error, e);
+                UserConsent userConsent = processUserConsent(request, context);
+                ConsentClaimsData consentClaimsData = getConsentClaimsData(context, authenticatedUser, serviceProvider);
+
+                try {
+                    List<Integer> claimIdsWithConsent = getClaimIdsWithConsent(userConsent);
+                    getSSOConsentService().processConsent(claimIdsWithConsent, serviceProvider, authenticatedUser,
+                                                          consentClaimsData);
+                    removeDisapprovedClaims(context, userConsent);
+                } catch (SSOConsentDisabledException e) {
+                    String error = "Authentication Failure: Consent management is disabled for SSO.";
+                    String errorDesc = "Illegal operation. Consent management is disabled, but post authentication " +
+                                       "for sso consent management is invoked.";
+                    throw new PostAuthenticationFailedException(error, errorDesc, e);
+                } catch (SSOConsentServiceException e) {
+                    String error = "Error occurred while processing consent input of user: %s, for service provider: " +
+                                   "%s in tenant domain: %s.";
+                    error = String.format(error, authenticatedUser.getAuthenticatedSubjectIdentifier(), serviceProvider
+                            .getApplicationName(), getSPTenantDomain(serviceProvider));
+                    throw new PostAuthenticationFailedException("Authentication failed. Error while processing user " +
+                                                                "consent input.", error, e);
+                }
+            } else {
+
+                UserConsentPurposeInput consentPurposeInput = processUserConsentPurpose(request);
+
+                try {
+                    List<UserConsentPurposeEntry> approvedPurposes = consentPurposeInput.getApprovedPurposes();
+                    Set<Integer> approvedPIICatIds = new HashSet<>();
+                    approvedPurposes.forEach(p -> p.getPiiCategoryIds().forEach(approvedPIICatIds::add));
+                    List<UserConsentPurposeEntry> disapprovedPurposes = consentPurposeInput.getDisapprovedPurposes();
+                    Set<Integer> disapprovedPIICatIds = new HashSet<>();
+                    disapprovedPurposes.forEach(p -> p.getPiiCategoryIds().forEach(disapprovedPIICatIds::add));
+                    ConsentPurposeData userConsentPurposeData = getSSOConsentService()
+                            .getConsentRequiredPurposeWithExistingConsent(serviceProvider, authenticatedUser);
+
+                    //user
+
+
+                } catch (SSOConsentServiceException e) {
+                    //TODO throw
+                    throw new PostAuthenticationFailedException("Authentication failed. Error while processing user " +
+                                                                "consent input.", "", e);
+                }
+
             }
         } else {
 
@@ -314,6 +457,14 @@ public class ConsentMgtPostAuthnHandler extends AbstractPostAuthnHandler {
             throw new PostAuthenticationFailedException(error, error);
         }
         return PostAuthnHandlerFlowStatus.SUCCESS_COMPLETED;
+    }
+
+    private boolean isAdvanceConsentManagementEnabled(ServiceProvider serviceProvider) {
+
+        return serviceProvider.getConsentConfig() != null &&
+               serviceProvider.getConsentConfig().getConsentPurposeConfigs() != null &&
+               serviceProvider.getConsentConfig().getConsentPurposeConfigs().getConsentPurpose() != null &&
+               serviceProvider.getConsentConfig().getConsentPurposeConfigs().getConsentPurpose().length != 0;
     }
 
     private ConsentClaimsData getConsentClaimsData(AuthenticationContext context, AuthenticatedUser authenticatedUser,
@@ -377,6 +528,71 @@ public class ConsentMgtPostAuthnHandler extends AbstractPostAuthnHandler {
             claims.add(claimMetaData.getClaimUri());
         }
         return claims;
+    }
+
+    private UserConsentPurposeInput processUserConsentPurpose(HttpServletRequest request) throws
+            PostAuthenticationFailedException {
+
+        String purposeIdInputId = "app_purpose_id";
+        String purposePIIInputPattern = "purpose_%s_pii";
+        UserConsentPurposeInput consentPurposeInput = new UserConsentPurposeInput();
+        String[] purposeIds = request.getParameterValues(purposeIdInputId);
+        if (purposeIds != null) {
+
+            List<UserConsentPurposeEntry> approvedPurposeEntries = new ArrayList<>();
+            List<UserConsentPurposeEntry> disapprovedPurposeEntries = new ArrayList<>();
+            for (String purposeId : purposeIds) {
+
+                String purposePIIInputId = String.format(purposePIIInputPattern, purposeId);
+                String[] purposePIIIds = request.getParameterValues(purposePIIInputId);
+                if (purposePIIIds != null) {
+                    processPIIsOfPurpose(request, purposeId, purposePIIIds, approvedPurposeEntries,
+                                         disapprovedPurposeEntries);
+                } else {
+                    if (isDebugEnabled()) {
+                        logDebug("PII category IDs are not received from the consent form for Purpose ID: " +
+                                 purposeId);
+                    }
+                    throw new PostAuthenticationFailedException("Authentication failed. Consent purpose PII inputs " +
+                                                                "cannot be found",
+                                                                "PII information for consent purpose information not " +
+                                                                "received from the server.");
+                }
+            }
+            consentPurposeInput.setApprovedPurposes(approvedPurposeEntries);
+            consentPurposeInput.setDisapprovedPurposes(disapprovedPurposeEntries);
+        } else {
+            if (isDebugEnabled()) {
+                logDebug("Purpose IDs are not received from the consent form.");
+            }
+            throw new PostAuthenticationFailedException("Authentication failed. Consent purpose inputs cannot be " +
+                                                        "found", "Consent purpose information not received from the " +
+                                                                 "server.");
+        }
+        return consentPurposeInput;
+    }
+
+    private void processPIIsOfPurpose(HttpServletRequest request, String purposeId, String[] purposePIIIds,
+                                      List<UserConsentPurposeEntry> approvedPurposeEntries,
+                                      List<UserConsentPurposeEntry> disapprovedPurposeEntries) {
+
+        String approvedPIIInputPattern = "purpose_%s_pii_%s";
+        Set<Integer> approvedPIICategoryIds = new HashSet<>();
+        Set<Integer> disapprovedPIICategoryIds = new HashSet<>();
+        for (String purposePIIId : purposePIIIds) {
+            String approvedPIIInputId = String.format(approvedPIIInputPattern, purposePIIId);
+            if (request.getParameter(approvedPIIInputId) != null) {
+                approvedPIICategoryIds.add(Integer.parseInt(purposePIIId));
+            } else {
+                disapprovedPIICategoryIds.add(Integer.parseInt(purposePIIId));
+            }
+        }
+        UserConsentPurposeEntry approvedEntry =
+                new UserConsentPurposeEntry(Integer.parseInt(purposeId), new ArrayList<>(approvedPIICategoryIds));
+        approvedPurposeEntries.add(approvedEntry);
+        UserConsentPurposeEntry disapprovedEntry =
+                new UserConsentPurposeEntry(Integer.parseInt(purposeId), new ArrayList<>(disapprovedPIICategoryIds));
+        disapprovedPurposeEntries.add(disapprovedEntry);
     }
 
     private UserConsent processUserConsent(HttpServletRequest request, AuthenticationContext context) throws

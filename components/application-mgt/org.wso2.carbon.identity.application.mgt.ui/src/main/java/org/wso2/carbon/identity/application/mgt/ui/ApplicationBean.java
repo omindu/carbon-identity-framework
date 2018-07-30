@@ -1447,13 +1447,16 @@ public class ApplicationBean {
                 && "on".equals(alwaysSendMappedLocalSubjectId) ? true : false);
 
         String IS_CONSENT_ENABLED = "is_consent_enabled";
+        String CONSENT_DESCRIPTION = "consent-description";
         boolean consentEnabled = request.getParameter(IS_CONSENT_ENABLED) != null;
+        String consentDescription = request.getParameter(CONSENT_DESCRIPTION);
 
         ArrayList<ConsentPurpose> consentPurposesList = new ArrayList<>();
         processConsentPurposesInput(request, consentPurposesList);
 
         ConsentConfig consentConfig = new ConsentConfig();
         consentConfig.setEnabled(consentEnabled);
+        consentConfig.setDescription(consentDescription);
         ConsentPurposeConfigs consentPurposeConfigs = new ConsentPurposeConfigs();
         consentPurposeConfigs.setConsentPurpose(consentPurposesList.toArray(new ConsentPurpose[0]));
         consentConfig.setConsentPurposeConfigs(consentPurposeConfigs);

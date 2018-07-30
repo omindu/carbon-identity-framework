@@ -34,6 +34,7 @@
 <%@ page import="org.wso2.carbon.identity.application.common.util.IdentityApplicationManagementUtil" %>
 <%@ page import="org.wso2.carbon.identity.application.mgt.ui.ApplicationBean" %>
 <%@ page import="org.wso2.carbon.identity.application.mgt.ui.client.ApplicationManagementServiceClient" %>
+<%@ page import="org.wso2.carbon.identity.application.mgt.ui.util.ApplicationMgtUIConstants" %>
 <%@ page import="org.wso2.carbon.identity.application.mgt.ui.util.ApplicationMgtUIUtil" %>
 <%@ page import="org.wso2.carbon.identity.application.mgt.ui.ApplicationPurpose" %>
 <%@ page import="org.wso2.carbon.identity.application.mgt.ui.ApplicationPurposes" %>
@@ -94,7 +95,7 @@
     String operation = request.getParameter("operation");
     String[] userStoreDomains = null;
     boolean isNeedToUpdate = false;
-    
+        
     String authTypeReq = request.getParameter("authType");
     if (authTypeReq != null && authTypeReq.trim().length() > 0) {
         appBean.setAuthenticationType(authTypeReq);
@@ -108,17 +109,22 @@
     if ("updateSharedPurposes".equals(action)) {
         appBean.setSharedPurposes(ApplicationMgtUIUtil.getSharedPurposes());
     }
-
+    
     ApplicationPurposes applicationPurposes = appBean.getApplicationPurposes();
     List<ApplicationPurpose> appPurposes = applicationPurposes.getAppPurposes();
     List<ApplicationPurpose> appSharedPurposes = applicationPurposes.getAppSharedPurposes();
     Purpose[] sharedPurposes = appBean.getSharedPurposes();
     boolean isConsentManagementEnabled = false;
+    String consentDescription = null;
 
     if (appBean.getServiceProvider().getConsentConfig() != null) {
         isConsentManagementEnabled = appBean.getServiceProvider().getConsentConfig().getEnabled();
+        consentDescription = appBean.getServiceProvider().getConsentConfig().getDescription();
     }
 
+    if (consentDescription == null) {
+        consentDescription = ApplicationMgtUIConstants.DEFAULT_CONSENT_DESCRIPTION;
+    }
     
     if (samlIssuerName != null && "update".equals(action)) {
         appBean.setSAMLIssuer(samlIssuerName);
@@ -1518,7 +1524,7 @@
                             <td class="leftCol-med labelField"><fmt:message key="consent.collection.message"/></td>
                             <td class="leftCol-med">
                                 <textarea style="width:500px; margin: 0px; height: 100px;" type="text" name="consent-description" id="consent-description"
-                                            class="text-box-big"></textarea>
+                                            class="text-box-big"><%=Encode.forHtmlContent(consentDescription)%></textarea>
                                 <div class="sectionHelp">
                                     <fmt:message key="consent.collection.message.help"/>
                                 </div>

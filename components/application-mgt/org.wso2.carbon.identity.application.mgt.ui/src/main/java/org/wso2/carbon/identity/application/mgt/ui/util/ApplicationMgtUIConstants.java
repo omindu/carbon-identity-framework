@@ -30,6 +30,8 @@ public class ApplicationMgtUIConstants {
     public static final String PURPOSE_GROUP_TYPE_SP = "SP";
     public static final String PURPOSE_GROUP_TYPE_SYSTEM = "SYSTEM";
     public static final int DEFAULT_DISPLAY_ORDER = 0;
+    public static final String DEFAULT_CONSENT_DESCRIPTION ="{{sp.name}} application requests access to your profile " +
+                                                            "information.";
 
     /**
      * Holds the application UI param related constants.

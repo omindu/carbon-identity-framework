@@ -35,10 +35,14 @@ public class ConsentConfig implements Serializable {
 
     private static final long serialVersionUID = -8949172355745509861L;
     private static final String ENABLED_ELEM = "Enabled";
+    private static final String DESCRIPTION_ELEM = "Description";
     private static final String CONSENT_PURPOSE_CONFIGS_ELEM = "ConsentPurposeConfigs";
 
     @XmlElement(name = "ConsentPurposeConfigs")
     private ConsentPurposeConfigs consentPurposeConfigs;
+
+    @XmlElement(name = "Description")
+    private String description;
 
     @XmlElement(name = "Enabled")
     private boolean enabled;
@@ -63,6 +67,17 @@ public class ConsentConfig implements Serializable {
         this.consentPurposeConfigs = consentPurposeConfigs;
     }
 
+    public String getDescription() {
+
+        return description;
+    }
+
+    public void setDescription(String description) {
+
+        this.description = description;
+    }
+
+
     /**
      * Build ConsentConfig from ConsentConfig OM element.
      *
@@ -80,6 +95,12 @@ public class ConsentConfig implements Serializable {
                 if (element.getText() != null) {
                     consentConfig.setEnabled(Boolean.getBoolean(element.getText()));
                 }
+            } else if (DESCRIPTION_ELEM.equals(elementName)) {
+                String desc = element.getText();
+                if (desc == null) {
+                    desc = "";
+                }
+                consentConfig.setDescription(desc);
             } else {
                 if (CONSENT_PURPOSE_CONFIGS_ELEM.equals(elementName)) {
                     consentConfig.setConsentPurposeConfigs(ConsentPurposeConfigs.build(element));

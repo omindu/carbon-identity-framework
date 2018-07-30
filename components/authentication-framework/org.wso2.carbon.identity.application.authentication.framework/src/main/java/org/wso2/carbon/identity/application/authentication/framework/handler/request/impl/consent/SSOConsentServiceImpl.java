@@ -29,6 +29,7 @@ import org.wso2.carbon.consent.mgt.core.model.PIICategory;
 import org.wso2.carbon.consent.mgt.core.model.PIICategoryValidity;
 import org.wso2.carbon.consent.mgt.core.model.Purpose;
 import org.wso2.carbon.consent.mgt.core.model.PurposeCategory;
+import org.wso2.carbon.consent.mgt.core.model.PurposePIICategory;
 import org.wso2.carbon.consent.mgt.core.model.Receipt;
 import org.wso2.carbon.consent.mgt.core.model.ReceiptInput;
 import org.wso2.carbon.consent.mgt.core.model.ReceiptListResponse;
@@ -45,6 +46,7 @@ import org.wso2.carbon.identity.application.authentication.framework.handler.req
 import org.wso2.carbon.identity.application.authentication.framework.internal.FrameworkServiceDataHolder;
 import org.wso2.carbon.identity.application.authentication.framework.model.AuthenticatedUser;
 import org.wso2.carbon.identity.application.common.model.ClaimMapping;
+import org.wso2.carbon.identity.application.common.model.ConsentConfig;
 import org.wso2.carbon.identity.application.common.model.ServiceProvider;
 import org.wso2.carbon.identity.application.common.model.User;
 import org.wso2.carbon.identity.claim.metadata.mgt.ClaimMetadataManagementService;
@@ -373,6 +375,195 @@ public class SSOConsentServiceImpl implements SSOConsentService {
     public boolean isSSOConsentManagementEnabled(ServiceProvider serviceProvider) {
 
         return ssoConsentEnabled;
+    }
+
+
+    @Override
+    public ConsentClaimsData getConsentRequiredClaimsFromUserWithExistingConsents(ServiceProvider serviceProvider,
+                                                                                  AuthenticatedUser authenticatedUser,
+                                                                                  List<String> userLocalClaimUris)
+            throws SSOConsentServiceException {
+
+        return getConsentRequiredClaimsFromUser(serviceProvider, authenticatedUser, userLocalClaimUris, true);
+    }
+
+    protected ConsentClaimsData getConsentRequiredClaimsFromUser(ServiceProvider serviceProvider,
+                                                                 AuthenticatedUser authenticatedUser,
+                                                                 List<String> userLocalClaimUris,
+                                                                 boolean useExistingConsents)
+            throws SSOConsentServiceException {
+
+        ClaimMapping[] claimMappings = getSpClaimMappings(serviceProvider);
+        String spTenantDomain = getSPTenantDomain(serviceProvider);
+        List<String> requestedClaims = new ArrayList<>();
+        List<String> mandatoryClaims = new ArrayList<>();
+
+        Map<ClaimMapping, String> userAttributes = authenticatedUser.getUserAttributes();
+        String subjectClaimUri = getSubjectClaimUri(serviceProvider);
+        String spName = serviceProvider.getApplicationName();
+        String subject = buildSubjectWithUserStoreDomain(authenticatedUser);
+
+        if (isPassThroughScenario(claimMappings, userAttributes)) {
+            for (Map.Entry<ClaimMapping, String> userAttribute : userAttributes.entrySet()) {
+                String remoteClaimUri = userAttribute.getKey().getRemoteClaim().getClaimUri();
+                if (subjectClaimUri.equals(remoteClaimUri) ||
+                    IdentityCoreConstants.MULTI_ATTRIBUTE_SEPARATOR.equals(remoteClaimUri)) {
+                    continue;
+                }
+                mandatoryClaims.add(remoteClaimUri);
+            }
+        } else {
+
+            boolean isCustomClaimMapping = isCustomClaimMapping(serviceProvider);
+            for (ClaimMapping claimMapping : claimMappings) {
+                String localClaimUri = claimMapping.getLocalClaim().getClaimUri();
+                if (isCustomClaimMapping) {
+                    if (subjectClaimUri.equals(claimMapping.getRemoteClaim().getClaimUri())) {
+                        subjectClaimUri = localClaimUri;
+                        continue;
+                    }
+                } else {
+                    if (subjectClaimUri.equals(localClaimUri)) {
+                        continue;
+                    }
+                }
+                if (claimMapping.isMandatory() && userLocalClaimUris.remove(localClaimUri)) {
+                    mandatoryClaims.add(localClaimUri);
+                } else if (claimMapping.isRequested() && userLocalClaimUris.remove(localClaimUri)) {
+                    requestedClaims.add(localClaimUri);
+                }
+                requestedClaims.addAll(userLocalClaimUris);
+            }
+        }
+        mandatoryClaims.add(subjectClaimUri);
+        List<ClaimMetaData> receiptConsentMetaData = new ArrayList<>();
+        Receipt receipt = getConsentReceiptOfUser(serviceProvider, authenticatedUser, spName, spTenantDomain, subject);
+        if (useExistingConsents && receipt != null) {
+            receiptConsentMetaData = getConsentClaimsFromReceipt(receipt);
+            List<String> claimsWithConsent = getClaimsFromConsentMetaData(receiptConsentMetaData);
+            mandatoryClaims.removeAll(claimsWithConsent);
+            // Only request consent for mandatory claims without consent when a receipt already exist for the user.
+            requestedClaims.clear();
+        }
+
+        ConsentClaimsData consentClaimsData = getConsentRequiredClaimData(mandatoryClaims, requestedClaims,
+                                                                          spTenantDomain);
+        consentClaimsData.setClaimsWithConsent(receiptConsentMetaData);
+        return consentClaimsData;
+    }
+
+    @Override
+    public ConsentPurposeData getConsentRequiredPurposeWithExistingConsent(ServiceProvider serviceProvider,
+                                                                           AuthenticatedUser authenticatedUser)
+            throws SSOConsentServiceException {
+
+        return getConsentRequiredPurpose(serviceProvider, authenticatedUser, true);
+    }
+
+    protected ConsentPurposeData getConsentRequiredPurpose(ServiceProvider serviceProvider, AuthenticatedUser authenticatedUser,
+                                                           boolean useExistingConsents)
+            throws SSOConsentServiceException {
+
+        String spName = serviceProvider.getApplicationName();
+        String spTenantDomain = getSPTenantDomain(serviceProvider);
+        String subject = buildSubjectWithUserStoreDomain(authenticatedUser);
+        List<ApplicationConsentPurpose> appConsentPurposes = getAppConsentPurposes(serviceProvider);
+        List<ApplicationConsentPurpose> requiredConsentPurposes = new ArrayList<>(appConsentPurposes);
+        List<ApplicationConsentPurpose> approvedConsentPurposes = new ArrayList<>();
+        ConsentPurposeData consentPurposeData = new ConsentPurposeData();
+
+        Receipt receipt = getConsentReceiptOfUser(serviceProvider, authenticatedUser, spName, spTenantDomain, subject);
+        if (useExistingConsents && receipt != null) {
+            List<ReceiptService> services = receipt.getServices();
+            for (ReceiptService receiptService : services) {
+                List<ConsentPurpose> receiptPurposes = receiptService.getPurposes();
+                for (ConsentPurpose receiptPurpose : receiptPurposes) {
+                    List<PIICategoryValidity> piiCategories = receiptPurpose.getPiiCategory();
+                    Purpose purpose = new Purpose(receiptPurpose.getPurposeId(), receiptPurpose.getPurpose());
+                    for (PIICategoryValidity piiCategoryValidity : piiCategories) {
+                        PurposePIICategory piiCategory = new PurposePIICategory(piiCategoryValidity.getId(), false);
+                        piiCategory.setName(piiCategoryValidity.getName());
+                        piiCategory.setDisplayName(piiCategory.getDisplayName());
+                    }
+                    ApplicationConsentPurpose appPurpose = new ApplicationConsentPurpose(purpose, 0);
+                    approvedConsentPurposes.add(appPurpose);
+                }
+            }
+
+            for (ApplicationConsentPurpose appConsentPurpose : appConsentPurposes) {
+                if (appConsentPurpose.getPurpose() != null &&
+                    appConsentPurpose.getPurpose().getPurposePIICategories() != null) {
+
+                    List<PurposePIICategory> purposePIICategories = appConsentPurpose.getPurpose()
+                                                                                     .getPurposePIICategories();
+                    for (PurposePIICategory purposePIICategory : purposePIICategories) {
+                        if (purposePIICategory.getMandatory()) {
+                            int index = approvedConsentPurposes.indexOf(appConsentPurpose);
+                            if (index >= 0) {
+                                ApplicationConsentPurpose approvedConsentPurpose = approvedConsentPurposes.get(index);
+                                List<PurposePIICategory> approvedPIIs = approvedConsentPurpose
+                                        .getPurpose().getPurposePIICategories();
+                                for (PurposePIICategory piiCategory : approvedPIIs) {
+                                    if (piiCategory.getId().equals(purposePIICategory.getId())) {
+                                        removePIIFromPurposeList(requiredConsentPurposes, appConsentPurpose,
+                                                                 purposePIICategory.getId());
+                                    }
+                                }
+                            }
+                        } else {
+                            removePIIFromPurposeList(requiredConsentPurposes, appConsentPurpose,
+                                                     purposePIICategory.getId());
+                        }
+                    }
+                }
+            }
+        }
+        consentPurposeData.setConsentMandatoryPurposes(requiredConsentPurposes);
+        consentPurposeData.setPurposesWithConsent(appConsentPurposes);
+
+        return consentPurposeData;
+    }
+
+    private void removePIIFromPurposeList(List<ApplicationConsentPurpose> consentPurposes,
+                                          ApplicationConsentPurpose appConsentPurpose, int piiCategoryId) {
+
+        int index = consentPurposes.indexOf(appConsentPurpose);
+        if (index >= 0) {
+            ApplicationConsentPurpose consentPurpose = consentPurposes.get(index);
+            if (consentPurpose.getPurpose() != null && consentPurpose.getPurpose().getPurposePIICategories() != null) {
+                List<PurposePIICategory> requiredPIIs = consentPurpose.getPurpose().getPurposePIICategories();
+                requiredPIIs.removeIf(p -> p.getId().equals(piiCategoryId));
+            }
+        }
+    }
+
+    private List<ApplicationConsentPurpose> getAppConsentPurposes(ServiceProvider serviceProvider) throws
+            SSOConsentServiceException {
+
+        List<ApplicationConsentPurpose> appConsentPurposes = new ArrayList<>();
+        ConsentConfig consentConfig = serviceProvider.getConsentConfig();
+        if (consentConfig != null && consentConfig.getConsentPurposeConfigs() != null
+            && consentConfig.getConsentPurposeConfigs().getConsentPurpose() != null) {
+            org.wso2.carbon.identity.application.common.model.ConsentPurpose[] consentPurposes = consentConfig
+                    .getConsentPurposeConfigs().getConsentPurpose();
+            for (org.wso2.carbon.identity.application.common.model.ConsentPurpose consentPurpose : consentPurposes) {
+
+                int purposeId = consentPurpose.getPurposeId();
+                try {
+                    Purpose purpose = getConsentManager().getPurpose(purposeId);
+                    if (purpose.getPurposePIICategories() != null && !purpose.getPurposePIICategories().isEmpty()) {
+
+                        ApplicationConsentPurpose appConsentPurpose = new ApplicationConsentPurpose(
+                                purpose, consentPurpose.getDisplayOrder());
+                        appConsentPurposes.add(appConsentPurpose);
+                    }
+                } catch (ConsentManagementException e) {
+                    throw new SSOConsentServiceException("Consent Management Error",
+                            String.format("Error while retrieving Purpose: %s.", purposeId), e);
+                }
+            }
+        }
+        return appConsentPurposes;
     }
 
     private Receipt getConsentReceiptOfUser(ServiceProvider serviceProvider, AuthenticatedUser authenticatedUser,

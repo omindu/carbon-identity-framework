@@ -83,4 +83,33 @@ public interface SSOConsentService {
      * @return true if enabled, false otherwise.
      */
     boolean isSSOConsentManagementEnabled(ServiceProvider serviceProvider);
+
+
+    /**
+     * Get consent required claims from user attributes considering existing user consents.
+     *
+     * @param serviceProvider       Service provider requesting consent.
+     * @param authenticatedUser     Authenticated user requesting consent form.
+     * @param userLocalClaimUris    Claim URIs of user attributes in local claim dialect.
+     *
+     * @return ConsentClaimsData which contains mandatory and required claims for consent.
+     * @throws SSOConsentServiceException If error occurs while building consent claim information.
+     */
+    ConsentClaimsData getConsentRequiredClaimsFromUserWithExistingConsents(ServiceProvider serviceProvider,
+                                                                           AuthenticatedUser authenticatedUser,
+                                                                           List<String> userLocalClaimUris)
+            throws SSOConsentServiceException;
+
+    /**
+     * Get consent required purpose for a given service from a user considering existing user consents.
+     *
+     * @param serviceProvider   Service provider requesting consent.
+     * @param authenticatedUser Authenticated user requesting consent form.
+     *
+     * @return ConsentPurposeData which includes mandatory and existing consent purposes.
+     * @throws SSOConsentServiceException If error occurs while building purpose information.
+     */
+    ConsentPurposeData getConsentRequiredPurposeWithExistingConsent(ServiceProvider serviceProvider,
+                                                                    AuthenticatedUser authenticatedUser)
+            throws SSOConsentServiceException;
 }

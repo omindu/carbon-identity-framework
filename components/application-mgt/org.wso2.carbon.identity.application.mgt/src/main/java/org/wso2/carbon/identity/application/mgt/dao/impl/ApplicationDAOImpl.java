@@ -470,8 +470,9 @@ public class ApplicationDAOImpl implements ApplicationDAO {
 
         try (PreparedStatement pst = connection.prepareStatement(UPDATE_BASIC_APP_INFO_WITH_CONSENT_ENABLED)) {
             pst.setString(1, consentConfig.isEnabled() ? "1" : "0");
-            pst.setInt(2, tenantID);
-            pst.setInt(3, applicationId);
+            pst.setString(2, consentConfig.getDescription());
+            pst.setInt(3, tenantID);
+            pst.setInt(4, applicationId);
             pst.executeUpdate();
         } catch (SQLException e) {
             String error = String.format("Error while setting consentEnabled: %s for applicationId: %s in tenantId: " +
@@ -1818,7 +1819,7 @@ public class ApplicationDAOImpl implements ApplicationDAO {
             basicAppDataResultSet = loadBasicAppInfoStmt.executeQuery();
             // ID, TENANT_ID, APP_NAME, USER_STORE, USERNAME, DESCRIPTION, ROLE_CLAIM, AUTH_TYPE,
             // PROVISIONING_USERSTORE_DOMAIN, IS_LOCAL_CLAIM_DIALECT, IS_SEND_LOCAL_SUBJECT_ID,
-            // IS_SEND_AUTH_LIST_OF_IDPS, SUBJECT_CLAIM_URI, IS_SAAS_APP, IS_CONSENT_ENABLED
+            // IS_SEND_AUTH_LIST_OF_IDPS, SUBJECT_CLAIM_URI, IS_SAAS_APP, IS_CONSENT_ENABLED, CONSENT_DESCRIPTION
 
             if (basicAppDataResultSet.next()) {
                 serviceProvider = new ServiceProvider();
@@ -1866,6 +1867,7 @@ public class ApplicationDAOImpl implements ApplicationDAO {
 
                 ConsentConfig consentConfig = new ConsentConfig();
                 consentConfig.setEnabled("1".equals(basicAppDataResultSet.getString(18)));
+                consentConfig.setDescription(basicAppDataResultSet.getString(19));
                 serviceProvider.setConsentConfig(consentConfig);
                 if (log.isDebugEnabled()) {
                     log.debug("ApplicationID: " + serviceProvider.getApplicationID()
@@ -2010,6 +2012,7 @@ public class ApplicationDAOImpl implements ApplicationDAO {
 
                 ConsentConfig consentConfig = new ConsentConfig();
                 consentConfig.setEnabled("1".equals(rs.getString(18)));
+                consentConfig.setDescription(rs.getString(19));
                 serviceProvider.setConsentConfig(consentConfig);
 
                 if (log.isDebugEnabled()) {

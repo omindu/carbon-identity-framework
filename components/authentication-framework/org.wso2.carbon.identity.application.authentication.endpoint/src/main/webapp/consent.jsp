@@ -16,8 +16,21 @@
   ~ under the License.
   --%>
 
+<%@page import="java.util.ArrayList"%>
+<%@page import="java.util.Comparator"%>
+<%@page import="org.wso2.carbon.consent.mgt.core.model.PurposePIICategory"%>
+<%@page import="org.wso2.carbon.consent.mgt.core.model.Purpose"%>
+<%@page import="org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.ApplicationConsentPurpose"%>
+<%@page import="java.util.List"%>
+<%@page import="org.wso2.carbon.identity.application.authentication.framework.handler.request.impl.consent.ApplicationConsent"%>
 <%@ page import="org.owasp.encoder.Encode" %>
 <%@ page import="org.wso2.carbon.identity.application.authentication.endpoint.util.Constants" %>
+<%@ page import="com.google.gson.Gson" %>
+<%@ page import="com.google.gson.reflect.TypeToken" %>
+<%@ page import="org.wso2.carbon.identity.application.authentication.endpoint.util.AuthContextAPIClient" %>
+<%@ page import="org.wso2.carbon.identity.core.util.IdentityCoreConstants" %>
+<%@ page import="org.wso2.carbon.identity.core.util.IdentityUtil" %>
+<%@ page import="java.util.Map" %>
 <%@include file="localize.jsp" %>
 <%@include file="init-url.jsp" %>
 
@@ -32,6 +45,34 @@
     if (request.getParameter(Constants.MANDATORY_CLAIMS) != null) {
         mandatoryClaimList = request.getParameter(Constants.MANDATORY_CLAIMS).split(Constants.CLAIM_SEPARATOR);
     }
+
+    String sessionDataKey = request.getParameter(Constants.SESSION_DATA_KEY);
+    String authAPIURL = application.getInitParameter(Constants.AUTHENTICATION_REST_ENDPOINT_URL);
+    if (StringUtils.isBlank(authAPIURL)) {
+        authAPIURL = IdentityUtil.getServerURL("/api/identity/auth/v1.1/", true, true);
+    }
+    if (!authAPIURL.endsWith("/")) {
+        authAPIURL += "/";
+    }
+    authAPIURL += "context/" + sessionDataKey;
+    String contextProperties = AuthContextAPIClient.getContextProperties(authAPIURL);
+    Map<String, String> endpointParams = new Gson().fromJson(contextProperties, new TypeToken<Map<String, String>>() {}.getType());
+    List<ApplicationConsentPurpose> consentPurposes = null;
+    
+    String consentDescription = null;
+    
+    if (endpointParams != null && !endpointParams.isEmpty()) {
+    	ApplicationConsent applicationConsent = new Gson().fromJson(endpointParams.get("ApplicationConsent"), 
+    	    new TypeToken<ApplicationConsent>() {}.getType());
+        consentDescription = applicationConsent.getConsentDescription();
+        consentPurposes = applicationConsent.getApplicationConsentPurposes();
+    }
+    
+    boolean isAdvanceConsentConfigEnabled = false;
+    if (consentPurposes != null && !consentPurposes.isEmpty()) {
+    	isAdvanceConsentConfigEnabled = true;
+    } 
+    
 %>
 
 <html>
@@ -109,9 +150,12 @@
                             <div class="col-xs-12 col-sm-12 col-md-12 col-lg-12">
                                 <div class="alert alert-warning" role="alert">
                                     <p class="margin-bottom-double">
-                                        <strong><%=Encode.forHtml(request.getParameter("sp"))%>
-                                        </strong>
+                                        <%if (consentDescription == null) {%>
+                                        <strong><%=Encode.forHtml(request.getParameter("sp"))%></strong>
                                         <%=AuthenticationEndpointUtil.i18n(resourceBundle, "request.access.profile")%>
+                                        <%} else {%>
+                                        <%=Encode.forHtml(consentDescription)%>
+                                        <%}%>
                                     </p>
                                 </div>
                             </div>
@@ -133,6 +177,7 @@
                                                 </label>
                                             </div>
                                         </div>
+                                        <% if (!isAdvanceConsentConfigEnabled) { %>
                                         <div class="claim-list">
                                             <% for (String claim : mandatoryClaimList) {
                                                     String[] mandatoryClaimData = claim.split("_", 2);
@@ -170,7 +215,53 @@
                                                 }
                                             %>
                                         </div>
-                                        <div class="text-left padding-top-double">
+                                        <% } %>
+                                        <div>
+                                        <% if (consentPurposes != null) {
+                                               consentPurposes.sort(Comparator.comparing(ApplicationConsentPurpose::getDisplayOrder));
+                                               for (ApplicationConsentPurpose consentPurpose : consentPurposes) {
+                                                   Purpose purpose = consentPurpose.getPurpose();
+                                                   if ( purpose != null && purpose.getPurposePIICategories() != null && !purpose.getPurposePIICategories().isEmpty()) {
+                                        %>
+                                            <div class="claim-alert" role="alert">
+                                                <p class="margin-bottom-double">
+                                                    We require your approval to use following attributes for: <b><%=Encode.forHtml(purpose.getName())%></b>
+                                                </p>
+                                                <input type="hidden" id="app_purpose_id" name="app_purpose_id" value="<%=purpose.getId()%>">
+                                            </div>
+                                            <%
+                                                  	    List<PurposePIICategory> piiCaterCategories = purpose.getPurposePIICategories();
+                                                        piiCaterCategories.sort(Comparator.comparing(PurposePIICategory::getMandatory).reversed());
+                                                  	    for (PurposePIICategory piiCategory : piiCaterCategories) {
+                                                  		    String displayName = piiCategory.getDisplayName() != null ? piiCategory.getDisplayName() : piiCategory.getName();	
+                                            %>
+                                            <div class="claim-list">
+                                                <input type="hidden" id="purpose_<%=purpose.getId()%>_pii" name="purpose_<%=purpose.getId()%>_pii"
+                                                            value="<%=piiCategory.getId()%>">
+												<div class="checkbox claim-cb">
+													<label>
+                                                        <% if (piiCategory.getMandatory()) { %>
+                                                        <input class="mandatory-claim" name="purpose_<%=purpose.getId()%>_pii_<%=piiCategory.getId()%>" 
+                                                        	id="purpose_<%=purpose.getId()%>_pii_<%=piiCategory.getId()%>" required type="checkbox">
+                                                        <%=Encode.forHtml(displayName)%>
+                                                        <span class="required font-medium">*</span>
+                                                        <% } else {%>
+                                                        <input name="purpose_<%=purpose.getId()%>_pii_<%=piiCategory.getId()%>" 
+                                                        	id="purpose_<%=purpose.getId()%>_pii_<%=piiCategory.getId()%>" required type="checkbox">
+                                                        <%=Encode.forHtml(displayName)%>	
+                                                        <% } %>
+                                                        
+                                                    </label>
+                                                </div>
+                                            </div>
+                                        <%
+                                                  	    }
+                                                   }
+                                               }
+                                           }
+                                         %>
+                                         </div>                
+                                         <div class="text-left padding-top-double">
                                             <span class="mandatory"><%=AuthenticationEndpointUtil.i18n(resourceBundle, "mandatory.claims.recommendation")%></span>
                                             <span class="required font-medium">( * )</span>
                                         </div>
