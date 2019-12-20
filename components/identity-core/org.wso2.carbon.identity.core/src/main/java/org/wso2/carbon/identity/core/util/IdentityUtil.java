@@ -37,6 +37,8 @@ import org.wso2.carbon.core.util.Utils;
 import org.wso2.carbon.identity.base.IdentityConstants;
 import org.wso2.carbon.identity.base.IdentityException;
 import org.wso2.carbon.identity.base.IdentityRuntimeException;
+import org.wso2.carbon.identity.core.URLResolverException;
+import org.wso2.carbon.identity.core.URLResolverService;
 import org.wso2.carbon.identity.core.internal.IdentityCoreServiceComponent;
 import org.wso2.carbon.identity.core.model.IdentityCacheConfig;
 import org.wso2.carbon.identity.core.model.IdentityCacheConfigKey;
@@ -356,34 +358,13 @@ public class IdentityUtil {
 
     public static String getServerURL(String endpoint, boolean addProxyContextPath, boolean addWebContextRoot)
             throws IdentityRuntimeException {
-        String hostName = ServerConfiguration.getInstance().getFirstProperty(IdentityCoreConstants.HOST_NAME);
 
         try {
-            if (hostName == null) {
-                hostName = NetworkUtils.getLocalHostname();
-            }
-        } catch (SocketException e) {
-            throw IdentityRuntimeException.error("Error while trying to read hostname.", e);
+            return urlResolverService.resolveUrl(endpoint, addProxyContextPath, addWebContextRoot,
+                                                 tenantNameFromContext, null);
+        } catch (URLResolverException e) {
+            throw IdentityRuntimeException.error("Error while resolving URL: " + endpoint, e);
         }
-
-        String mgtTransport = CarbonUtils.getManagementTransport();
-        AxisConfiguration axisConfiguration = IdentityCoreServiceComponent.getConfigurationContextService().
-                getServerConfigContext().getAxisConfiguration();
-        int mgtTransportPort = CarbonUtils.getTransportProxyPort(axisConfiguration, mgtTransport);
-        if (mgtTransportPort <= 0) {
-            mgtTransportPort = CarbonUtils.getTransportPort(axisConfiguration, mgtTransport);
-        }
-        if (hostName.endsWith("/")) {
-            hostName = hostName.substring(0, hostName.length() - 1);
-        }
-        StringBuilder serverUrl = new StringBuilder(mgtTransport).append("://").append(hostName.toLowerCase());
-        // If it's well known HTTPS port, skip adding port
-        if (mgtTransportPort != IdentityCoreConstants.DEFAULT_HTTPS_PORT) {
-            serverUrl.append(":").append(mgtTransportPort);
-        }
-
-        appendContextToUri(endpoint, addProxyContextPath, addWebContextRoot, serverUrl);
-        return serverUrl.toString();
     }
 
     private static void appendContextToUri(String endpoint, boolean addProxyContextPath, boolean addWebContextRoot,
@@ -1132,6 +1113,9 @@ public class IdentityUtil {
             return true;
         }
 
+        URLResolverService urlResolverService = IdentityCoreServiceComponent.getURLResolverService();
+        String tenantNameFromContext = (String) IdentityUtil.threadLocalProperties.get().get
+                ("TenantNameFromContext");
         try {
             convertPEMEncodedContentToCertificate(certificateContent);
             return true;
