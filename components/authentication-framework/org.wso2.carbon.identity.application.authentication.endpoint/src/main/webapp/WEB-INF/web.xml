@@ -116,6 +116,21 @@
         <url-pattern>/*</url-pattern>
     </filter-mapping>
 
+
+    <filter>
+        <filter-name>SuperTenantFlowIntiFilter</filter-name>
+        <filter-class>
+            org.wso2.carbon.identity.core.filter.SuperTenantFlowInitializer
+        </filter-class>
+    </filter>
+
+    <filter-mapping>
+        <filter-name>SuperTenantFlowIntiFilter</filter-name>
+        <url-pattern>/*</url-pattern>
+        <dispatcher>FORWARD</dispatcher>
+        <dispatcher>REQUEST</dispatcher>
+    </filter-mapping>
+
     <filter>
         <filter-name>ContentTypeBasedCachePreventionFilter</filter-name>    
         <filter-class>
