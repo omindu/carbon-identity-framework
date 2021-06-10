@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  MAVEN_OPTS: -Xmx4g -Xms1g
+  MAVEN_OPTS: -Xmx4g -Xms1g -Dmaven.artifact.threads=10
 
 jobs:
   build:
